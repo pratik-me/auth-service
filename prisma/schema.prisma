@@ -1,0 +1,25 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model user {
+  id  String @id @default(auto()) @map("_id") @db.ObjectId
+  name String
+  email String @unique   // trim lowercase
+  password String 
+  role String
+  isEmailVerified Boolean @default(false)
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret String?
+  tokenVersion Int @default(0)
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
