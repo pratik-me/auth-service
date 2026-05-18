@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import authRouter from "./routes/auth.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +15,8 @@ const app = express();
 
 app.use(express.json({limit: "10mb"}));
 app.use(cookieParser());
+
+app.use('/auth', authRouter);
 
 // Production related
 if (process.env.NODE_ENV === "production") {
