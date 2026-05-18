@@ -7,6 +7,8 @@ import { FORNTEND_URL, PASSWORD_SALT, SITE_NAME, VERIFY_EMAIL_URL } from "../con
 import jwt from "jsonwebtoken";
 import { sendEmail, sendResetEmail } from "../lib/email/emailRender.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken } from "../lib/token/token.js";
+import { getGoogleClient } from "../lib/OAuth/google.oauth.js";
+
 
 export const registerHandler = async (req: Request, res: Response) => {
     try {
@@ -260,7 +262,7 @@ export const resetPasswordHandler = async (req: Request, res: Response) => {
             }
         })
 
-        if(!user) return res.status(400).json({message: "Invalid or expired token"});
+        if (!user) return res.status(400).json({ message: "Invalid or expired token" });
         const newHashedPassword = await bcrypt.hash(password, PASSWORD_SALT);
         await prisma.user.update({
             where: {
@@ -282,5 +284,92 @@ export const resetPasswordHandler = async (req: Request, res: Response) => {
         return res.status(500).json({
             message: "Error in reset password handler"
         })
+    }
+}
+
+export const googleAuthStartHandler = async (req: Request, res: Response) => {
+    try {
+        const client = getGoogleClient();
+        const url = client.generateAuthUrl({
+            access_type: "offline",
+            prompt: "consent",
+            scope: ['openid', 'email', 'profile'],
+        });
+
+        return res.redirect(url);
+    } catch (error) {
+        console.log("Error while authentication with google\n", error);
+        return res.status(500).json({ message: "Error in google auth start handler" });
+    }
+}
+
+export const googleAuthCallbackHandler = async (req: Request, res: Response) => {
+    try {
+        const code = req.query.code as string | undefined;
+        if (!code) return res.status(400).json({ message: "Missing code in callback" });
+        const client = getGoogleClient();
+        const { tokens } = await client.getToken(code);
+        if (!tokens.id_token) return res.status(400).json({ message: "No google id_token present" });
+        const ticket = await client.verifyIdToken({
+            idToken: tokens.id_token,
+            audience: process.env.GOOGLE_CLIENT_ID!,
+        });
+        const payload = ticket.getPayload();
+
+        const email = payload?.email;
+        const name = payload?.name;
+        const emailVerified = payload?.email_verified;
+        if (!name) return res.status(400).json({ message: "Name is not provided by google" })
+        if (!email || !emailVerified) return res.status(400).json({ message: "Google account is not verified." });
+
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) {
+            const randomBytes = crypto.randomBytes(32).toString('hex');
+            const passwordHash = await bcrypt.hash(randomBytes, PASSWORD_SALT);
+            await prisma.user.create({
+                data: {
+                    name,
+                    email,
+                    password: passwordHash,
+                    role: 'user',
+                    isEmailVerified: true,
+                    twoFactorEnabled: false,
+                }
+            })
+        } else {
+            if (!user.isEmailVerified) {
+                await prisma.user.update({
+                    where: { email },
+                    data: {
+                        isEmailVerified: true,
+                    }
+                })
+            }
+        }
+
+        if (!user?.id || !user?.role || !user?.tokenVersion) return res.status(400).json({ message: "User data is corrupted" });
+        const accessToken = createAccessToken(user.id, user?.role, user?.tokenVersion);
+        const refreshToken = createRefreshToken(user.id, user.tokenVersion);
+
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
+        return res.status(200).json({
+            message: "Google login successfully",
+            accessToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                isEmailVerified: user.isEmailVerified,
+            }
+        })
+    } catch (error) {
+        console.log("Error in google auth callback\n", error);
+        return res.status(500).json({message: "Error in google auth callback handler"})
     }
 }
