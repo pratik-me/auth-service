@@ -1,6 +1,6 @@
 import type { Request, Response } from "express"
 import prisma from "../config/prisma.js"
-import { loginSchema, registerSchema } from "../lib/zod/auth.schema.js"
+import { forgotPassword, loginSchema, registerSchema } from "../lib/zod/auth.schema.js"
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { FORNTEND_URL, PASSWORD_SALT, SITE_NAME, VERIFY_EMAIL_URL } from "../config/consts.js";
@@ -209,10 +209,13 @@ export const logoutHandler = async (req: Request, res: Response) => {
 }
 
 export const forgotPasswordHandler = async (req: Request, res: Response) => {
-    const { email } = req.body as { email?: string };
-    if (!email) return res.status(401).json({
-        message: "Email is required",
+    const result = forgotPassword.safeParse(req.body)
+    if (!result.success) return res.status(401).json({
+        message: "Invalid data",
+        error: result.error,
     });
+
+    const { email } = result.data;
 
     const normalisedEmail = email.toLowerCase().trim();
     try {
@@ -221,7 +224,7 @@ export const forgotPasswordHandler = async (req: Request, res: Response) => {
                 email: normalisedEmail,
             }
         });
-        if(!user) return res.status(403).json({message: "Account associated with given email id is not present"});
+        if (!user) return res.status(403).json({ message: "Account associated with given email id is not present" });
         const rawToken = crypto.randomBytes(32).toString("hex");
         const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
         await prisma.user.update({
@@ -238,6 +241,46 @@ export const forgotPasswordHandler = async (req: Request, res: Response) => {
         await sendResetEmail(user.email, "Reset your password", user?.name, resetURL, SITE_NAME);
     } catch (error) {
         console.log(error);
-        return res.status(500).json({message: "Error in reset password handler"});
+        return res.status(500).json({ message: "Error in reset password handler" });
+    }
+}
+
+export const resetPasswordHandler = async (req: Request, res: Response) => {
+    const { token, password } = req.body as { token?: string, password?: string };
+
+    if (!token) return res.status(400).json({ message: "Reset token is missing" });
+    if (!password || password.length < 6) return res.status(400).json({ message: "Password must be atleast 6 characters long." })
+
+    try {
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        const user = await prisma.user.findFirst({
+            where: {
+                resetPasswordToken: tokenHash,
+                resetPasswordExpires: { gte: new Date() }
+            }
+        })
+
+        if(!user) return res.status(400).json({message: "Invalid or expired token"});
+        const newHashedPassword = await bcrypt.hash(password, PASSWORD_SALT);
+        await prisma.user.update({
+            where: {
+                email: user.email,
+            },
+            data: {
+                password: newHashedPassword,
+                resetPasswordToken: null,
+                resetPasswordExpires: null,
+                tokenVersion: user.tokenVersion + 1,
+            }
+        });
+
+        return res.status(200).json({
+            message: "Password reset successfully"
+        })
+    } catch (error) {
+        console.log(error);
+        return res.status(500).json({
+            message: "Error in reset password handler"
+        })
     }
 }
