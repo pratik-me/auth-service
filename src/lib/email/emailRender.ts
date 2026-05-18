@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import "dotenv/config";
 import { createWelcomeEmailTemplate } from "./emailTemplate.js";
+import { createResetEmailTemplate } from "./resetEmailTemplate.js";
 
 
 const transporter = nodemailer.createTransport({
@@ -27,6 +28,23 @@ export const sendEmail = async(to: string, subject: string, templateName: string
         return true;
     } catch (error) {
         console.log("Error while sending email:\n", error);
+        return false;
+    }
+}
+
+export const sendResetEmail = async(to: string, subject: string, name: string, resetUrl:string, site_name: string) => {
+    try {
+        await transporter.verify();
+
+        await transporter.sendMail({
+            from: `${process.env.SMTP_USER}`,
+            to,
+            subject,
+            html: createResetEmailTemplate(name, to, resetUrl, site_name),
+        })
+        return true;
+    } catch (error) {
+        console.log("Error while sending reset password mail\n", error);
         return false;
     }
 }
