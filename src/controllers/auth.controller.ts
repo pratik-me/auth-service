@@ -8,6 +8,8 @@ import jwt from "jsonwebtoken";
 import { sendEmail, sendResetEmail } from "../lib/email/emailRender.js";
 import { createAccessToken, createRefreshToken, verifyRefreshToken } from "../lib/token/token.js";
 import { getGoogleClient } from "../lib/OAuth/google.oauth.js";
+import axios, { AxiosError } from "axios";
+import { verify } from "otplib";
 
 
 export const registerHandler = async (req: Request, res: Response) => {
@@ -109,7 +111,7 @@ export const loginHandler = async (req: Request, res: Response) => {
             error: result.error,
         });
 
-        const { email, password } = result.data;
+        const { email, password, twoFactorCode } = result.data;
         const normalisedEmail = email.toLowerCase().trim();
         const existingUser = await prisma.user.findUnique({
             where: {
@@ -128,6 +130,16 @@ export const loginHandler = async (req: Request, res: Response) => {
         if (!existingUser.isEmailVerified) return res.status(403).json({
             message: "Please verify your email before logging",
         })
+
+        if(existingUser.twoFactorEnabled) {
+            if(!twoFactorCode || typeof twoFactorCode !== 'string')
+                return res.status(400).json({message: "Two factor code is required"})
+            if(!existingUser.twoFactorSecret) return res.status(400).json({message: "Two factor misconfigured for this account"})
+        };
+
+        // Verifying otp code
+        const isValidCode = verify({token: twoFactorCode, secret: existingUser.twoFactorSecret})
+        if(!isValidCode) return res.status(400).json({message: "Invalid two factor code"})
 
         const accessToken = createAccessToken(existingUser.id, existingUser.role, existingUser.tokenVersion);
         const refreshToken = createRefreshToken(existingUser.id, existingUser.tokenVersion);
@@ -370,6 +382,121 @@ export const googleAuthCallbackHandler = async (req: Request, res: Response) => 
         })
     } catch (error) {
         console.log("Error in google auth callback\n", error);
-        return res.status(500).json({message: "Error in google auth callback handler"})
+        return res.status(500).json({ message: "Error in google auth callback handler" })
     }
 }
+
+export const discordAuthStartHandler = async (req: Request, res: Response) => {
+    try {
+        const url = process.env.DISCORD_REDIRECT_URI!;
+        return res.redirect(url);
+    } catch (error) {
+        console.log("Error while authentication with discord\n", error);
+        return res.status(500).json({ message: "Error in discord auth start handler" });
+    }
+}
+
+export const discordAuthCallbackHandler = async (req: Request, res: Response) => {
+    const code = req.query.code as string | undefined;
+
+    if (!code) return res.status(400).send('No authorization code provided');
+    try {
+        const tokenParams = new URLSearchParams({
+            client_id: process.env.DISCORD_CLIENT_ID!,
+            client_secret: process.env.DISCORD_CLIENT_SECRET!,
+            grant_type: 'authorization_code',
+            code: code,
+            redirect_uri: process.env.DISCORD_REDIRECT_URI!
+        });
+
+        const tokenResponse = await axios.post(
+            'https://discord.com/api/oauth2/token',
+            tokenParams.toString(),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            }
+        );
+
+        const { access_token, token_type } = tokenResponse.data;
+
+        const userResponse = await axios.get('https://discord.com/api/users/@me', {
+            headers: {
+                authorization: `${token_type} ${access_token}`
+            }
+        });
+
+        // const guildsResponse = await axios.get('https://discord.com/api/users/@me/guilds', {
+        //     headers: {
+        //         authorization: `${token_type} ${access_token}`
+        //     }
+        // });
+
+        const userData = userResponse.data as {
+            id: string,
+            username: string,
+            avatar: string, discriminator: string,
+            email: string,
+            verified: boolean
+        };
+        // const userGuilds = guildsResponse.data;
+
+        const { username, email, verified } = userData;
+        if (!username) return res.status(400).json({ message: "Username is not provided by discord" })
+        if (!email || !verified) return res.status(400).json({ message: "Discord account is not verified." });
+
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) {
+            const randomBytes = crypto.randomBytes(32).toString('hex');
+            const passwordHash = await bcrypt.hash(randomBytes, PASSWORD_SALT);
+            await prisma.user.create({
+                data: {
+                    name: username,
+                    email,
+                    password: passwordHash,
+                    role: 'user',
+                    isEmailVerified: true,
+                    twoFactorEnabled: false,
+                }
+            })
+        } else {
+            if (!user.isEmailVerified) {
+                await prisma.user.update({
+                    where: { email },
+                    data: {
+                        isEmailVerified: true,
+                    }
+                })
+            }
+        }
+
+        if (!user?.id || !user?.role || !user?.tokenVersion) return res.status(400).json({ message: "User data is corrupted" });
+        const accessToken = createAccessToken(user.id, user?.role, user?.tokenVersion);
+        const refreshToken = createRefreshToken(user.id, user.tokenVersion);
+
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
+        return res.status(200).json({
+            message: "Discord login successfully",
+            accessToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                isEmailVerified: user.isEmailVerified,
+            }
+        })
+    } catch (error) {
+        if (error instanceof AxiosError)
+            console.error('Error during Discord OAuth:', error.response ? error.response.data : error.message);
+        else console.error('Error during Discord OAuth:', error)
+        return res.status(500).send('Authentication failed. Check your server console for details.');
+    }
+}
+
