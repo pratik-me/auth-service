@@ -131,15 +131,18 @@ export const loginHandler = async (req: Request, res: Response) => {
             message: "Please verify your email before logging",
         })
 
-        if(existingUser.twoFactorEnabled) {
-            if(!twoFactorCode || typeof twoFactorCode !== 'string')
-                return res.status(400).json({message: "Two factor code is required"})
-            if(!existingUser.twoFactorSecret) return res.status(400).json({message: "Two factor misconfigured for this account"})
-        };
+        if (existingUser.twoFactorEnabled) {
+            if (!twoFactorCode || typeof twoFactorCode !== 'string')
+                return res.status(400).json({ message: "Two factor code is required" })
+            if (!existingUser.twoFactorSecret)
+                return res.status(400).json({ message: "Two factor misconfigured for this account" });
 
-        // Verifying otp code
-        const isValidCode = verify({token: twoFactorCode, secret: existingUser.twoFactorSecret})
-        if(!isValidCode) return res.status(400).json({message: "Invalid two factor code"})
+            // Verifying otp code
+            if (!twoFactorCode) return res.status(400).json({ message: "Two Factor Code is required" });
+            if (!existingUser.twoFactorSecret) return res.status(400).json({ message: "Two factor misconfigured for this account" })
+            const isValidCode = verify({ token: twoFactorCode, secret: existingUser.twoFactorSecret })
+            if (!isValidCode) return res.status(400).json({ message: "Invalid two factor code" })
+        };
 
         const accessToken = createAccessToken(existingUser.id, existingUser.role, existingUser.tokenVersion);
         const refreshToken = createRefreshToken(existingUser.id, existingUser.tokenVersion);

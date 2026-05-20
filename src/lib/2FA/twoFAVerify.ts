@@ -28,6 +28,7 @@ export const twoFAVerifyHandler = async (req: any, res: Response) => {
             },
             data: {
                 twoFactorEnabled: true,
+                twoFactorSecret: null,
             }
         });
 

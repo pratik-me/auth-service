@@ -12,9 +12,9 @@ export const twoFASetupHandler = async (req: any, res: Response) => {
         });
 
         if (!user)
-            res.status(404).json({ message: "User not found" });
+            return res.status(404).json({ message: "User not found" });
         if (!user.email)
-            res.status(404).json({ message: "No email associated with user" })
+            return res.status(404).json({ message: "No email associated with user" })
         const secret = generateSecret();
         const otpAuthUrl = generateURI({
             issuer: 'NodeAdvancedAuthApp',
@@ -28,7 +28,6 @@ export const twoFASetupHandler = async (req: any, res: Response) => {
             },
             data: {
                 twoFactorSecret: secret,
-                twoFactorEnabled: false,
             }
         });
 
